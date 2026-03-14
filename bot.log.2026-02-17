@@ -1,0 +1,7 @@
+2026-02-17 16:49:30,241 - root - INFO - 🧹 Privacy cleanup: Cleared sessions for 2 users.
+2026-02-17 16:49:30,252 - __main__ - INFO - 💎 Бот Alma Dent Enterprise v3.1 (Policy + Timeout) ЗАПУЩЕН!
+2026-02-17 16:51:26,691 - __main__ - INFO - User 1338195472 started the bot
+2026-02-17 16:51:32,957 - __main__ - INFO - Session timed out for user 1338195472
+2026-02-17 16:56:43,989 - sheets_client - INFO - 🔄 Authenticating with Google Sheets API...
+2026-02-17 16:56:44,142 - sheets_client - INFO - ✅ Google Sheets authenticated successfully.
+2026-02-17 16:56:49,465 - sheets_client - INFO - Booking saved to Sheets.

@@ -1,0 +1,5 @@
+.env
+service_key.json
+__pycache__/
+*.pyc
+bot_state.json
