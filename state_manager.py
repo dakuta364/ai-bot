@@ -275,3 +275,35 @@ class StateManager:
             conn.execute("DELETE FROM pending_bookings WHERE user_id = ?", (user_id,))
             conn.commit()
             conn.close()
+
+    def claim_pending_booking(self, user_id):
+        """
+        Атомарная операция: ПРОЧИТАТЬ и УДАЛИТЬ запись одновременно.
+        Возвращает данные записи, если она была, иначе None.
+        Используется для защиты от двойного нажатия кнопок:
+        первый вызов получает данные, любой последующий получит None.
+        """
+        with self.lock:
+            conn = self._get_conn()
+            try:
+                cursor = conn.cursor()
+                # BEGIN EXCLUSIVE обеспечивает, что никакой другой поток
+                # не прочитает эту строку между SELECT и DELETE
+                conn.execute("BEGIN EXCLUSIVE")
+                cursor.execute("SELECT data FROM pending_bookings WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                if row:
+                    conn.execute("DELETE FROM pending_bookings WHERE user_id = ?", (user_id,))
+                    conn.commit()
+                    return json.loads(row[0])
+                conn.rollback()
+                return None
+            except Exception as e:
+                logging.error(f"claim_pending_booking failed: {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+            finally:
+                conn.close()

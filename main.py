@@ -3,10 +3,10 @@ import telebot
 from telebot import types
 import config
 from ai_client import get_groq_response, parse_server_response
-# Импортируем обе функции: сохранение и отмену
 from sheets_client import save_booking_to_sheets, cancel_booking_by_phone
 import time
 import logging
+import threading
 from logging.handlers import TimedRotatingFileHandler
 from state_manager import StateManager
 
@@ -58,7 +58,7 @@ def confirm_keyboard():
 def route_keyboard():
     """Инлайн-кнопка ссылки на карты"""
     markup = types.InlineKeyboardMarkup()
-    btn_url = types.InlineKeyboardButton("📍 Открыть Яндекс.Карты", url="https://yandex.ru/maps/-/CPUwmF-2")
+    btn_url = types.InlineKeyboardButton("📍 Открыть Яндекс.Карты", url=config.YANDEX_MAPS_URL)
     markup.add(btn_url)
     return markup
 
@@ -68,6 +68,34 @@ def policy_keyboard():
     btn_agree = types.InlineKeyboardButton("✅ Я даю согласие", callback_data="agree_policy")
     markup.add(btn_agree)
     return markup
+
+def master_keyboard(masters):
+    """Инлайн-кнопки выбора мастера"""
+    markup = types.InlineKeyboardMarkup()
+    for name, emoji in masters:
+        markup.add(types.InlineKeyboardButton(
+            f"{emoji} {name}",
+            callback_data=f"master:{name}"
+        ))
+    markup.add(types.InlineKeyboardButton("🔀 Любой свободный мастер", callback_data="master:—"))
+    markup.add(types.InlineKeyboardButton("❌ Отмена записи", callback_data="cancel_booking"))
+    return markup
+
+# ===========================
+# 🔍 ПОИСК МАСТЕРОВ ПО УСЛУГЕ
+# ===========================
+def find_masters_for_service(reason: str):
+    """
+    Ищет мастеров по ключевым словам из названия услуги.
+    Возвращает список мастеров (Имя, эмодзи) или пустой список.
+    """
+    if not reason:
+        return []
+    reason_lower = reason.lower()
+    for keyword, masters in config.MASTERS_BY_SERVICE.items():
+        if keyword in reason_lower:
+            return masters
+    return []
 
 # ===========================
 # 👋 ОБРАБОТЧИКИ КОМАНД
@@ -126,13 +154,13 @@ def handle_text(message):
 
     # 2. Маршрут
     if "маршрут" in text.lower() or "адрес" in text.lower() or "где вы" in text.lower():
-        bot.send_message(uid, "🏥 **Стоматология «Алма Дент»**\nг. Симферополь, ул. Екатерининская, 48.", 
+        bot.send_message(uid, f"🏥 **Студия красоты «{config.CLINIC_NAME}»**\n{config.CLINIC_ADDRESS}.", 
                          reply_markup=route_keyboard(), parse_mode="Markdown")
         return
 
     # 3. Контакты
-    if "контакты" in text.lower() or "телефон" in text.lower():
-        bot.send_message(uid, "📞 **Наш телефон:**\n+7 (932) 698-97-47\n\nРаботаем с 09:00 до 19:00.", 
+    if "contacts" in text.lower() or "контакты" in text.lower() or "телефон" in text.lower():
+        bot.send_message(uid, f"📞 **Наш телефон:**\n{config.CLINIC_PHONE}\n\nРаботаем {config.CLINIC_WORKING_HOURS}.", 
                          reply_markup=main_menu(), parse_mode="Markdown")
         return
         
@@ -164,17 +192,22 @@ def handle_text(message):
     # СЦЕНАРИЙ А: БРОНИРОВАНИЕ
     if action_type == 'BOOKING':
         state_manager.set_pending_booking(uid, action_data)
-        
-        # Формируем красивую карточку
-        confirm_msg = (
-            f"📝 **ПРОВЕРКА ДАННЫХ:**\n\n"
-            f"👤 **Пациент:** {action_data.get('surname', '')} {action_data.get('name', '')}\n"
-            f"📱 **Телефон:** `{action_data.get('phone', 'Не указан')}`\n"
-            f"🕒 **Дата/Время:** {action_data.get('date', 'В ближайшее время')}\n"
-            f"🦷 **Причина:** {action_data.get('reason', 'Осмотр')}\n\n"
-            f"_Всё верно? Отправлять администратору?_"
-        )
-        bot.send_message(uid, confirm_msg, reply_markup=confirm_keyboard(), parse_mode="Markdown")
+        reason = action_data.get('reason', '')
+        masters = find_masters_for_service(reason)
+
+        if masters:
+            # Предлагаем выбрать мастера
+            bot.send_message(
+                uid,
+                f"💅 *Отлично!* Услуга: *{reason}*\n\nВыбери мастера:",
+                reply_markup=master_keyboard(masters),
+                parse_mode="Markdown"
+            )
+        else:
+            # Мастера не определены (неизвестная бьюти-услуга) — пропускаем шаг выбора
+            action_data['master'] = '—'
+            state_manager.set_pending_booking(uid, action_data)
+            _show_confirm_card(uid, action_data)
         
     # СЦЕНАРИЙ Б: СБРОС ДИАЛОГА
     elif action_type == 'CANCEL':
@@ -195,7 +228,7 @@ def handle_text(message):
                 f"🗑 **ВНИМАНИЕ: ОТМЕНА ЗАПИСИ!**\n\n"
                 f"👤 Клиент: {info_text}\n"
                 f"📱 Телефон: `{cancel_phone}`\n"
-                f"ℹ️ Статус в CRM изменен на: ❌ ОТМЕНА КЛИЕНТОМ"
+                f"ℹ️ Статус в CRM изменен на: ОТМЕНЕНА"
             )
             try:
                 if config.ADMIN_ID:
@@ -212,6 +245,22 @@ def handle_text(message):
         bot.send_message(uid, clean_text, reply_markup=main_menu())
 
 # ===========================
+# 🗂 ПОКАЗ КАРТОЧКИ ПОДТВЕРЖДЕНИЯ
+# ===========================
+def _show_confirm_card(uid, booking_data):
+    """Отправляет карточку проверки данных с кнопками подтверждения."""
+    confirm_msg = (
+        f"📝 **ПРОВЕРКА ДАННЫХ:**\n\n"
+        f"👤 **Клиент:** {booking_data.get('surname', '')} {booking_data.get('name', '')}\n"
+        f"📱 **Телефон:** `{booking_data.get('phone', 'Не указан')}`\n"
+        f"🕒 **Дата/Время:** {booking_data.get('date', 'В ближайшее время')}\n"
+        f"💅 **Услуга:** {booking_data.get('reason', 'Не указана')}\n"
+        f"🧑‍🎨 **Мастер:** {booking_data.get('master', '—')}\n\n"
+        f"_Всё верно? Отправляем?_"
+    )
+    bot.send_message(uid, confirm_msg, reply_markup=confirm_keyboard(), parse_mode="Markdown")
+
+# ===========================
 # 🖱 ОБРАБОТЧИК КНОПОК (CALLBACK)
 # ===========================
 @bot.callback_query_handler(func=lambda call: True)
@@ -222,66 +271,82 @@ def callback_inline(call):
     if call.data == "agree_policy":
         state_manager.set_policy_accepted(uid)
         bot.answer_callback_query(call.id, "Спасибо! Доступ открыт.")
-        # Удаляем кнопку и приветствуем
-        bot.edit_message_reply_markup(chat_id=uid, message_id=call.message.message_id, reply_markup=None) # Удаляем кнопки
+        bot.edit_message_reply_markup(chat_id=uid, message_id=call.message.message_id, reply_markup=None)
         bot.send_message(uid, config.MSG_START, reply_markup=main_menu(), parse_mode="Markdown")
         return
 
-    # Блокировка остальных кнопок без политики (на всякий случай)
+    # Блокировка остальных кнопок без политики
     if not state_manager.is_policy_accepted(uid):
         bot.answer_callback_query(call.id, "Сначала примите соглашение.")
         return
 
-    state_manager.update_last_interaction(uid) # Любой клик продлевает сессию
+    state_manager.update_last_interaction(uid)
 
-    # Нажата кнопка "ОТМЕНА" (под карточкой)
-    if call.data == "cancel_booking":
-        state_manager.clear_pending_booking(uid)
-        bot.edit_message_text(chat_id=uid, message_id=call.message.message_id, 
-                              text="❌ **Оформление записи прервано.**\nВы можете задать вопрос или начать заново.",
-                              parse_mode="Markdown")
-    
-    # Нажата кнопка "ПОДТВЕРЖДАЮ"
-    elif call.data == "confirm_booking":
+    # ВЫБОР МАСТЕРА
+    if call.data.startswith("master:"):
+        chosen_master = call.data[len("master:"):]
         booking_data = state_manager.get_pending_booking(uid)
+
+        if not booking_data:
+            bot.answer_callback_query(call.id, "Сессия истекла, начните запись заново.")
+            return
+
+        # Сохраняем выбранного мастера в данные записи
+        booking_data['master'] = chosen_master
+        state_manager.set_pending_booking(uid, booking_data)
+
+        bot.answer_callback_query(call.id, f"Мастер: {chosen_master}")
+        # Убираем кнопки выбора и показываем финальную карточку
+        try:
+            bot.edit_message_reply_markup(chat_id=uid, message_id=call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        _show_confirm_card(uid, booking_data)
+        return
+
+    # КНОПКА "ОТМЕНА" (под карточкой подтверждения)
+    if call.data == "cancel_booking":
+        # АТОМАРНО захватываем запись — если она уже захвачена другим нажатием, claim вернет None
+        claimed = state_manager.claim_pending_booking(uid)
+        if not claimed:
+            # Запись уже захвачена другим нажатием — просто убираем жаверку
+            bot.answer_callback_query(call.id)
+            return
+        
+        # Информируем ИИ об отмене
+        history = state_manager.get_history(uid)
+        history.append({"role": "user", "content": "[Нажата кнопка: ОТМЕНА ЗАПИСИ (на этапе подтверждения)]"})
+        history.append({"role": "assistant", "content": "Запись отменена пользователем. Ожидаю дальнейших инструкций."})
+        state_manager.update_history(uid, history)
+        
+        bot.edit_message_text(chat_id=uid, message_id=call.message.message_id, 
+                              text="❌ **Оформление записи прервано.**\nМожешь задать вопрос или начать заново.",
+                              parse_mode="Markdown")
+        return
+    
+    # КНОПКА "ПОДТВЕРЖДАЮ"
+    elif call.data == "confirm_booking":
+        # АТОМАРНО захватываем запись — первое нажатие получает данные, все последующие получат None
+        booking_data = state_manager.claim_pending_booking(uid)
         
         if not booking_data:
-            bot.answer_callback_query(call.id, "Время сессии истекло. Начните заново.")
+            bot.answer_callback_query(call.id, "Запись уже обрабатывается или время сессии истекло.")
             return
+
+        state_manager.clear_user_state(uid)
 
         username = call.from_user.username
         full_name = f"{booking_data.get('surname', '')} {booking_data.get('name', '')}"
         
-        # 1. Сохраняем в Google Таблицу
-        is_saved = save_booking_to_sheets(booking_data, username)
-        
-        if not is_saved:
-             bot.answer_callback_query(call.id, "Ошибка сохранения. Попробуйте позже.")
-             logger.error(f"Failed to save booking for user {uid}")
-             return
-
-        # 2. Уведомляем Админа
-        admin_text = (
-            f"🔥 **НОВАЯ ЗАЯВКА (АЛМА ДЕНТ)**\n"
-            f"👤 **{full_name}**\n"
-            f"📱 `{booking_data.get('phone')}`\n"
-            f"🕒 {booking_data.get('date')}\n"
-            f"❓ {booking_data.get('reason')}\n"
-            f"🔗 @{username if username else 'Нет ника'}"
-        )
-        try:
-            if config.ADMIN_ID:
-                bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Failed to notify admin about new booking: {e}")
-
-        # 3. Финальный ответ клиенту
+        # 2. МГНОВЕННЫЙ ОТВЕТ ПОЛЬЗОВАТЕЛЮ
+        bot.answer_callback_query(call.id, "Отправляю заявку...")
+        master = booking_data.get('master', '—')
         success_msg = config.MSG_SUCCESS_BOOKING.format(
             full_name=full_name,
             date=booking_data.get('date'),
             reason=booking_data.get('reason'),
-            phone="+7 (978) 77-212-49",
-            CLINIC_PHONE=config.CLINIC_PHONE
+            master=master,
+            CLINIC_PHONE=config.CLINIC_SDR_PHONE
         )
         
         try:
@@ -290,14 +355,42 @@ def callback_inline(call):
         except Exception as e:
              logger.error(f"Failed to edit message: {e}")
              bot.send_message(uid, success_msg, parse_mode="Markdown")
-        
-        state_manager.clear_user_state(uid)
+             
+        # 3. ФОНОВОЕ СОХРАНЕНИЕ
+        # Переносим тяжеловесный запрос к Google API в отдельный поток
+        def background_save():
+            is_saved = save_booking_to_sheets(booking_data, username, uid)
+            
+            if not is_saved:
+                 logger.error(f"Failed to save booking for user {uid}")
+                 error_msg = "⚠️ К сожалению, произошла длительная техническая ошибка при сохранении вашей заявки в базу. Пожалуйста, напишите нам напрямую или попробуйте заново чуть позже."
+                 bot.send_message(uid, error_msg, parse_mode="Markdown")
+                 return
+
+            # Уведомляем Админа только после успешного сохранения в базу
+            admin_text = (
+                f"🔥 **НОВАЯ ЗАЯВКА ({config.CLINIC_NAME})**\n"
+                f"👤 **{full_name}**\n"
+                f"📱 `{booking_data.get('phone')}`\n"
+                f"🕒 {booking_data.get('date')}\n"
+                f"💅 {booking_data.get('reason')}\n"
+                f"🧑‍🎨 Мастер: {booking_data.get('master', '—')}\n"
+                f"🔗 @{username if username else 'Нет ника'}"
+            )
+            try:
+                if config.ADMIN_ID:
+                    bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Failed to notify admin about new booking: {e}")
+
+        # Запускаем сохранение в отдельном потоке
+        threading.Thread(target=background_save, daemon=True).start()
 
 # ===========================
 # 🚀 ЗАПУСК (RESTART LOOP)
 # ===========================
 if __name__ == "__main__":
-    logger.info("💎 Бот Alma Dent Enterprise v3.1 (Policy + Timeout) ЗАПУЩЕН!")
+    logger.info(f"💎 Бот {config.CLINIC_NAME} запущен!")
     
     # Отключаем лишний шум TeleBot при старте (если нужно)
     # logging.getLogger('TeleBot').setLevel(logging.WARNING)

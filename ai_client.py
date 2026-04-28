@@ -3,7 +3,7 @@ import requests
 import json
 import re
 import logging
-from config import GROQ_API_KEY, CLINIC_SYSTEM_PROMPT_TEMPLATE
+from config import GROQ_API_KEY, CLINIC_SYSTEM_PROMPT_TEMPLATE, AI_MODEL
 from utils import get_msk_time, validate_phone_number
 
 logger = logging.getLogger(__name__)
@@ -21,12 +21,17 @@ def get_groq_response(user_message, chat_history=[]):
         "Content-Type": "application/json"
     }
 
-    # 1. Генерация динамического промпта со временем
+    # 1. Генерация динамического промпта со временем и знаниями
+    from config import CLINIC_PRICES, CLINIC_SPECIALISTS
     time_data = get_msk_time()
     dynamic_system_prompt = CLINIC_SYSTEM_PROMPT_TEMPLATE.replace(
         "{current_time}", time_data['time']
     ).replace(
         "{current_date}", time_data['date']
+    ).replace(
+        "{CLINIC_PRICES}", CLINIC_PRICES
+    ).replace(
+        "{CLINIC_SPECIALISTS}", CLINIC_SPECIALISTS
     )
 
     # 2. Сборка истории сообщений
@@ -41,7 +46,7 @@ def get_groq_response(user_message, chat_history=[]):
 
     # 3. Параметры модели
     data = {
-        "model": "llama-3.3-70b-versatile", # Мощнейшая модель на сегодня
+        "model": AI_MODEL, # Мощнейшая модель на сегодня
         "messages": messages,
         "temperature": 0.5, # Баланс между креативом и точностью
         "max_completion_tokens": 1024,
@@ -129,8 +134,14 @@ def process_json_action(data):
     # --- 2. ЗАПИСЬ НА ПРИЕМ ---
     elif action == 'booking':
         # Валидация: проверяем наличие критических данных
-        if not data.get('name') or not data.get('surname'):
-            return 'TEXT', None, "😁 Для записи мне нужны ваше Имя и Фамилия. Напишите их, пожалуйста!"
+        # Валидация: проверяем наличие критических данных (имя и фамилия обязательны)
+        name = str(data.get('name', '')).strip()
+        surname = str(data.get('surname', '')).strip()
+        
+        # Если имя или фамилия отсутствуют, или фамилия заполнена прочерком (как мы разрешили ИИ в конфиге)
+        # Мы блокируем запись и просим данные.
+        if not name or not surname or surname == '-' or len(name) < 2 or len(surname) < 2:
+            return 'TEXT', None, "Для оформления записи мне нужны ваши **Имя** и **Фамилия** ✨ Напишите их, пожалуйста, одним сообщением."
         
         phone = data.get('phone')
         if not phone:

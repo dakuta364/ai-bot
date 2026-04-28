@@ -10,7 +10,7 @@ from utils import normalize_phone
 logger = logging.getLogger(__name__)
 
 # Заголовки столбцов
-HEADERS = ["Дата создания", "Имя", "Фамилия", "Телефон", "Желаемое время", "Причина", "Ник Telegram", "Статус"]
+HEADERS = ["Дата создания", "Имя", "Фамилия", "Телефон", "Желаемое время", "Услуга", "Мастер", "Ник Telegram", "Статус", "Chat ID", "Напоминание"]
 
 # Глобальная переменная для кэширования клиента
 _client = None
@@ -50,7 +50,7 @@ def init_sheet(sheet):
     except Exception as e:
         logger.error(f"⚠️ Ошибка инициализации таблицы: {e}")
 
-def save_booking_to_sheets(data_dict, username):
+def save_booking_to_sheets(data_dict, username, chat_id):
     """Сохраняет новую запись (с одной попыткой повтора при ошибке)"""
     # Нормализуем телефон перед сохранением
     if 'phone' in data_dict:
@@ -79,8 +79,11 @@ def save_booking_to_sheets(data_dict, username):
                 data_dict.get('phone', '-'),
                 data_dict.get('date', 'Не указано'),
                 data_dict.get('reason', 'Осмотр'),
+                data_dict.get('master', '—'),
                 f"@{username}" if username else "Скрыт",
-                "НОВАЯ"
+                "НОВАЯ",
+                chat_id,
+                ""  # Напоминание по умолчанию пустое
             ]
             sheet.append_row(row)
             # 🔒 Privacy: Do not log PII
@@ -128,14 +131,16 @@ def cancel_booking_by_phone(phone):
                     # Сравниваем точное совпадение нормализованных номеров
                     # или если один входит в другой (на случай 7978... и 8978...)
                     if search_phone in row_phone or row_phone in search_phone:
-                        current_status = row[7] if len(row) > 7 else ""
-                        if "ОТМЕНА" not in current_status:
+                        # Статус теперь 9-я колонка (индекс 8)
+                        current_status = row[8].strip().upper() if len(row) > 8 else ""
+                        if current_status == "НОВАЯ":
                             target_row_index = i + 1
                             client_info = f"{row[1]} {row[2]}"
                             break
             
             if target_row_index != -1:
-                sheet.update_cell(target_row_index, 8, "❌ ОТМЕНА КЛИЕНТОМ")
+                # Обновляем 9-ю колонку ("Статус")
+                sheet.update_cell(target_row_index, 9, "ОТМЕНЕНА")
                 # 🔒 Privacy: Masked log
                 masked_phone = f"***{phone[-4:]}" if len(phone) > 4 else "***"
                 logger.info(f"Booking cancelled by phone ending in {masked_phone}")
