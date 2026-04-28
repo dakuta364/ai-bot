@@ -1,8 +1,0 @@
-2026-03-22 11:35:59,364 - __main__ - INFO - 💎 Бот STUDIO BERRY запущен!
-2026-03-22 11:36:12,460 - __main__ - INFO - User 1338195472 started the bot
-2026-03-22 11:45:35,326 - __main__ - INFO - 💎 Бот STUDIO BERRY запущен!
-2026-03-22 11:49:38,912 - __main__ - INFO - 🛑 Бот остановлен пользователем (Ctrl+C).
-2026-03-22 11:49:40,026 - __main__ - INFO - 💎 Бот STUDIO BERRY запущен!
-2026-03-22 11:51:24,057 - sheets_client - INFO - 🔄 Authenticating with Google Sheets API...
-2026-03-22 11:51:24,216 - sheets_client - INFO - ✅ Google Sheets authenticated successfully.
-2026-03-22 11:51:30,566 - sheets_client - INFO - Booking saved to Sheets.
